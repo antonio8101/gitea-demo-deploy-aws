@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    container:
+      image: ci-runner:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check environment
+        run: |
+          php -v
+          composer --version
+          php -m
+
+      - name: Install Composer dependencies
+        run: composer install --optimize-autoloader --no-interaction --prefer-dist
+
+#      - name: Build frontend assets
+#        run: |
+#          npm install
+#          npm run build
+
+      - name: Prepare Laravel environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --ansi
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+
+      - name: Run tests
+        run: php artisan test --filter=Unit

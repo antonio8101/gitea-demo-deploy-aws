@@ -1,0 +1,114 @@
+name: CD
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    container:
+      image: ci-runner:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction --prefer-dist
+
+      - name: Get Version
+        id: get_version
+        run: |
+          VERSION="${{ github.ref_name }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+#      - name: Build frontend assets
+#        run: |
+#          npm install
+#          npm run build
+
+      - name: Prepare Laravel for production
+        run: |
+          cp .env.example .env
+          sed -i "s|APP_VERSION=.*|APP_VERSION=${{ steps.get_version.outputs.version }}|" .env
+          php artisan key:generate --ansi
+          php artisan config:cache
+          php artisan route:cache
+          php artisan view:cache
+
+      - name: Create release artifact
+        id: artifact
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          APP_NAME="demo-app"
+          ARTIFACT_NAME="${VERSION}.zip"
+
+          zip -r "${ARTIFACT_NAME}" . \
+            --exclude ".git/*" \
+            --exclude "node_modules/*" \
+            --exclude "tests/*" \
+            --exclude "storage/logs/*" \
+            --exclude "*.zip"
+
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Built: ${ARTIFACT_NAME} ($(du -sh ${ARTIFACT_NAME} | cut -f1))"
+
+      - name: Upload artifact to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws s3 cp "${{ steps.artifact.outputs.artifact_name }}" \
+            "s3://${{ secrets.S3_BUCKET_NAME }}/${{ steps.artifact.outputs.app_name }}/${{ steps.artifact.outputs.artifact_name }}"
+
+          echo "✅ Artifact at: s3://${{ secrets.S3_BUCKET_NAME }}/releases/${{ steps.get_version.outputs.version }}/"
+
+      - name: Update SSM parameter with deployed version
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws ssm put-parameter \
+            --name "/ai-landings/demo-app/version" \
+            --value "${{ steps.get_version.outputs.version }}" \
+            --type "String" \
+            --overwrite
+
+          echo "✅ SSM /ai-landings/demo-app/version = ${{ steps.get_version.outputs.version }}"
+
+      - name: Refresh Auto Scaling Group
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+        run: |
+          ASG_NAME="${{ vars.ASG_NAME || 'ailandings-demo-asg-1' }}"
+          REGION="${{ vars.AWS_REGION || 'eu-west-1' }}"
+
+          echo "Looking for ASG: $ASG_NAME in $REGION"
+
+          EXISTS=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$ASG_NAME" \
+            --region "$REGION" \
+            --query "length(AutoScalingGroups)" \
+            --output text 2>/dev/null || echo "0")
+
+          if [ "$EXISTS" = "0" ]; then
+            echo "⚠️  ASG '$ASG_NAME' not found — skipping instance refresh."
+            exit 0
+          fi
+
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name "$ASG_NAME" \
+            --region "$REGION" \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 60}' \
+            --output text
+
+          echo "✅ Instance refresh started on $ASG_NAME"

@@ -1,0 +1,19 @@
+log:
+  level: info
+
+runner:
+  capacity: 5
+  timeout: 3h
+  insecure: false
+
+container:
+  # Put job containers on the same Docker network as Gitea so they can
+  # resolve the "gitea" hostname when cloning the repository.
+  network: "demo_gitea-net"
+  privileged: false
+  options: ""
+  valid_volumes: []
+  docker_host: ""
+
+cache:
+  enabled: true

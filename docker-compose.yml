@@ -1,0 +1,93 @@
+name: demo
+
+services:
+
+  # ─── Database ───────────────────────────────────────────────────────────────
+  gitea-db:
+    image: postgres:16-alpine
+    container_name: gitea-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gitea
+      POSTGRES_PASSWORD: gitea
+      POSTGRES_DB: gitea
+    volumes:
+      - gitea-db-data:/var/lib/postgresql/data
+    networks:
+      - gitea-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitea"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── Gitea ───────────────────────────────────────────────────────────────────
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    restart: unless-stopped
+    depends_on:
+      gitea-db:
+        condition: service_healthy
+    environment:
+      # Server
+      GITEA__server__DOMAIN: localhost
+      GITEA__server__HTTP_PORT: 3000
+      GITEA__server__ROOT_URL: http://localhost:3000
+      GITEA__server__SSH_PORT: 2222
+      GITEA__server__SSH_LISTEN_PORT: 22
+
+      # Database
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: gitea-db:5432
+      GITEA__database__NAME: gitea
+      GITEA__database__USER: gitea
+      GITEA__database__PASSWD: gitea
+
+      # Actions (CI/CD)
+      GITEA__actions__ENABLED: "true"
+
+      # Security — skips the web wizard entirely.
+      # After first boot, create an admin user once:
+      #   docker exec -it gitea gitea admin user create \
+      #     --admin --username admin --password Admin1234! --email admin@local.dev
+      GITEA__security__INSTALL_LOCK: "true"
+    ports:
+      - "3000:3000"   # Web UI
+      - "2222:22"     # SSH
+    volumes:
+      - gitea-data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - gitea-net
+
+  # ─── Gitea Actions Runner ────────────────────────────────────────────────────
+  gitea-runner:
+    image: gitea/act_runner:latest
+    container_name: gitea-runner
+    restart: unless-stopped
+    depends_on:
+      - gitea
+    environment:
+      GITEA_INSTANCE_URL: http://gitea:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN: ${GITEA_RUNNER_TOKEN:-}
+      GITEA_RUNNER_NAME: local-runner
+      CONFIG_FILE: /config/runner-config.yaml
+    volumes:
+      - gitea-runner-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./runner-config.yaml:/config/runner-config.yaml:ro
+    networks:
+      - gitea-net
+
+# ─── Volumes ────────────────────────────────────────────────────────────────
+volumes:
+  gitea-db-data:
+  gitea-data:
+  gitea-runner-data:
+
+# ─── Networks ────────────────────────────────────────────────────────────────
+networks:
+  gitea-net:
+    driver: bridge
