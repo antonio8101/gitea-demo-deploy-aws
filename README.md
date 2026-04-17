@@ -1,4 +1,4 @@
-# AiLandings Demo App
+# AWS Deploy Demo App
 
 A **Laravel 13** demo application that showcases a complete CI/CD pipeline using a self-hosted [Gitea](https://gitea.io) instance, a custom Docker runner image, and AWS for artifact storage and deployment.
 
